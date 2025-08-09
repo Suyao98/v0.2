@@ -148,7 +148,7 @@ def show_result(ji_list, xiong_list):
 
 # -------------- Streamlit 主界面 --------------
 
-st.title("多输入方式八字吉凶年份查询")
+st.title("八字吉凶年份查询")
 
 input_mode = st.radio("请选择输入方式", ["阳历生日", "农历生日", "四柱八字"])
 
