@@ -90,11 +90,18 @@ def analyze_bazi(nianzhu, yuezhu, rizhu, shizhu):
 # ------------------ 立春和八字推算 ------------------
 
 def get_li_chun_date(year):
-    """返回指定年份立春的阳历日期"""
-    cal = sxtwl.fromSolar(year, 1, 1)
-    for solar in cal.getJieQiList():
-        if solar["jieQi"] == 3:  # 立春节气编号
-            return datetime.date(solar["year"], solar["month"], solar["day"])
+    cal = sxtwl.Calendar()
+    # 1-3月遍历寻找立春节气（编号3）
+    for month in range(1, 4):
+        for day in range(1, 32):
+            try:
+                solar = sxtwl.Solar(year, month, day)
+                lunar = cal.getLunarBySolar(solar)
+                if lunar.getJieQi() == 3:  # 立春
+                    return datetime.date(year, month, day)
+            except:
+                continue
+    # 未找到默认2月4日
     return datetime.date(year, 2, 4)
 
 def get_year_ganzhi_li_chun(year, month, day):
@@ -106,7 +113,6 @@ def get_year_ganzhi_li_chun(year, month, day):
 
 def get_month_ganzhi_li_chun(year, month, day):
     li_chun = get_li_chun_date(year)
-    birth_date = datetime.date(year, month, day)
     solar = Solar(year, month, day)
     lunar = Converter.Solar2Lunar(solar)
     lunar_month = lunar.month
@@ -148,7 +154,7 @@ def show_result(ji_list, xiong_list):
             year_strs = []
             for y in sorted(years):
                 if y >= current_year:
-                    year_strs.append(f"<b style='color:red'>{gz}{y}年★</b>")
+                    year_strs.append(f"<span style='color:#d6336c;font-weight:bold'>{gz}{y}年★</span>")
                 else:
                     year_strs.append(f"{gz}{y}年")
             st.markdown(f"{gz}: {', '.join(year_strs)}", unsafe_allow_html=True)
@@ -159,14 +165,14 @@ def show_result(ji_list, xiong_list):
             year_strs = []
             for y in sorted(years):
                 if y >= current_year:
-                    year_strs.append(f"<b style='color:#333'>{gz}{y}年★</b>")
+                    year_strs.append(f"<span style='color:#333333;font-weight:bold'>{gz}{y}年★</span>")
                 else:
                     year_strs.append(f"{gz}{y}年")
             st.markdown(f"{gz}: {', '.join(year_strs)}", unsafe_allow_html=True)
 
 # ---------------------- 主界面 ----------------------
 
-st.title("八字吉凶年份查询")
+st.title("八字吉凶年份查询（立春换年、寅月起月）")
 
 input_mode = st.radio("请选择输入方式", ["阳历生日（立春换年）", "农历生日", "四柱八字"])
 
@@ -195,7 +201,6 @@ elif input_mode == "农历生日":
     if st.button("开始推算八字并查询吉凶"):
         try:
             hour = birth_hour if birth_hour >= 0 else 0
-            # 先转阳历再用立春法推算，农历转阳历
             solar = Converter.Lunar2Solar(Lunar(lunar_year, lunar_month, lunar_day, False))
             nianzhu, yuezhu, rizhu, shizhu = get_bazi_from_solar_li_chun(
                 solar.year, solar.month, solar.day, hour
@@ -208,7 +213,7 @@ elif input_mode == "农历生日":
         except Exception as e:
             st.error(f"计算出错：{e}")
 
-else:  # 四柱八字直接输入
+else:  # 四柱八字输入
     year_zhu = st.text_input("请输入年柱（如 甲子）")
     month_zhu = st.text_input("请输入月柱（如 乙丑）")
     day_zhu = st.text_input("请输入日柱（如 丙寅）")
