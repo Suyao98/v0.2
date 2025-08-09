@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
 import datetime
-import sxtwl
+import sxtwl_py as sxtwl
 from lunarcalendar import Converter, Solar, Lunar
 
 # ---------- 基础数据 ----------
