@@ -153,4 +153,52 @@ st.title("多输入方式八字吉凶年份查询")
 input_mode = st.radio("请选择输入方式", ["阳历生日", "农历生日", "四柱八字"])
 
 if input_mode == "阳历生日":
-    birth_date = st_
+    birth_date = st.date_input("请选择阳历出生日期", min_value=datetime.date(1900, 1, 1))
+    birth_hour = st.slider("请选择出生时辰（0-23时，未知请选-1）", -1, 23, -1)
+    if st.button("开始推算八字并查询吉凶"):
+        try:
+            hour = birth_hour if birth_hour >= 0 else 0
+            nianzhu, yuezhu, rizhu, shizhu = get_bazi_from_solar(
+                birth_date.year, birth_date.month, birth_date.day, hour
+            )
+            if birth_hour == -1:
+                shizhu = "不知道"
+            st.write(f"推算八字：年柱 {nianzhu}，月柱 {yuezhu}，日柱 {rizhu}，时柱 {shizhu}")
+            ji_list, xiong_list = analyze_bazi(nianzhu, yuezhu, rizhu, shizhu)
+            show_result(ji_list, xiong_list)
+        except Exception as e:
+            st.error(f"计算出错：{e}")
+
+elif input_mode == "农历生日":
+    lunar_year = st.number_input("农历年", min_value=1900, max_value=2100, value=1990)
+    lunar_month = st.number_input("农历月（1-12）", min_value=1, max_value=12, value=1)
+    lunar_day = st.number_input("农历日（1-30）", min_value=1, max_value=30, value=1)
+    birth_hour = st.slider("请选择出生时辰（0-23时，未知请选-1）", -1, 23, -1)
+    if st.button("开始推算八字并查询吉凶"):
+        try:
+            hour = birth_hour if birth_hour >= 0 else 0
+            nianzhu, yuezhu, rizhu, shizhu = get_bazi_from_lunar(
+                lunar_year, lunar_month, lunar_day, hour
+            )
+            if birth_hour == -1:
+                shizhu = "不知道"
+            st.write(f"推算八字：年柱 {nianzhu}，月柱 {yuezhu}，日柱 {rizhu}，时柱 {shizhu}")
+            ji_list, xiong_list = analyze_bazi(nianzhu, yuezhu, rizhu, shizhu)
+            show_result(ji_list, xiong_list)
+        except Exception as e:
+            st.error(f"计算出错：{e}")
+
+else:
+    year_zhu = st.text_input("请输入年柱（如 甲子）")
+    month_zhu = st.text_input("请输入月柱（如 乙丑）")
+    day_zhu = st.text_input("请输入日柱（如 丙寅）")
+    time_zhu = st.text_input("请输入时柱（如 不知道）", value="不知道")
+    if st.button("查询吉凶年份"):
+        if not (year_zhu and month_zhu and day_zhu):
+            st.error("年柱、月柱、日柱必须填写")
+        else:
+            try:
+                ji_list, xiong_list = analyze_bazi(year_zhu.strip(), month_zhu.strip(), day_zhu.strip(), time_zhu.strip())
+                show_result(ji_list, xiong_list)
+            except Exception as e:
+                st.error(f"计算出错：{e}")
