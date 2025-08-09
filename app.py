@@ -1,20 +1,13 @@
 # -*- coding: utf-8 -*-
 """
-八字吉凶查询（Streamlit 单文件）
-功能：
-- 支持用户选择：阳历出生 / 农历出生 / 四柱八字 输入
-- 时辰可填写具体到分钟，也可以填写“不知道”以跳过时柱
-- 使用 sxtwl（若可用）精确推算年/月/日/时柱（以立春、节气为界）
-- 若 sxtwl 不可用，使用内置近似方法（在节气交界时可能有误差）
-- 保留并使用你原有的吉凶计算规则（天干合/冲、地支合/冲、进一/退一）
-- 输出：逐柱吉/凶集合，并按万年历映射为具体年份；当年份 > 当前年时标注（★）
-- 界面：吉用喜庆色，凶用阴沉色
+Streamlit 单文件：八字推算（立春分年、节气分月/手动月支）、日柱用锚点法（anchor），时精确到分钟
+保持原有吉凶规则（天干合/冲、地支合/冲、双合进一/双冲退一）
 """
 import datetime
 from datetime import date, timedelta
 import streamlit as st
 
-# ---- 尝试导入高精度日历库 sxtwl（若本地安装并正确，优先使用） ----
+# 试探导入 sxtwl（若已正确安装可提高节气与干支精度）
 try:
     import sxtwl
     HAVE_SXTWL = True
@@ -22,445 +15,353 @@ except Exception:
     sxtwl = None
     HAVE_SXTWL = False
 
-# ---- 基础常量（与你之前代码一致） ----
-tiangan = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
-dizhi = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
+# ------------------ 基础干支与规则（与您保持一致） ------------------
+tiangan = ["甲","乙","丙","丁","戊","己","庚","辛","壬","癸"]
+dizhi = ["子","丑","寅","卯","辰","巳","午","未","申","酉","戌","亥"]
 
 # 天干合（五合）
-gan_he = {
-    "甲": "己", "己": "甲",
-    "乙": "庚", "庚": "乙",
-    "丙": "辛", "辛": "丙",
-    "丁": "壬", "壳": "壬", "壬": "丁",  # 注意兼容性（'壳'不会出现，只是保险）
-    "戊": "癸", "癸": "戊"
-}
-# 你指定的天干冲（仅保留四对，已去掉戊己）——与之前你确认的一致
-gan_chong = {
-    "甲": "庚", "庚": "甲",
-    "乙": "辛", "辛": "乙",
-    "丙": "壬", "壬": "丙",
-    "丁": "癸", "癸": "丁"
-}
+gan_he = {"甲":"己","己":"甲","乙":"庚","庚":"乙","丙":"辛","辛":"丙","丁":"壬","壬":"丁","戊":"癸","癸":"戊"}
+
+# 仅四冲（你确认过，删掉戊己）
+gan_chong = {"甲":"庚","庚":"甲","乙":"辛","辛":"乙","丙":"壬","壬":"丙","丁":"癸","癸":"丁"}
 
 # 地支合（六合）
-zhi_he = {
-    "子": "丑", "丑": "子",
-    "寅": "亥", "亥": "寅",
-    "卯": "戌", "戌": "卯",
-    "辰": "酉", "酉": "辰",
-    "巳": "申", "申": "巳",
-    "午": "未", "未": "午"
-}
+zhi_he = {"子":"丑","丑":"子","寅":"亥","亥":"寅","卯":"戌","戌":"卯","辰":"酉","酉":"辰","巳":"申","申":"巳","午":"未","未":"午"}
 
-# 地支冲（相隔6位）
-zhi_chong = {dz: dizhi[(i + 6) % 12] for i, dz in enumerate(dizhi)}
+# 地支冲（对冲，间隔6）
+zhi_chong = {dz: dizhi[(i+6)%12] for i,dz in enumerate(dizhi)}
 
-def zhi_next(z):
-    return dizhi[(dizhi.index(z) + 1) % 12]
+def zhi_next(z): return dizhi[(dizhi.index(z)+1)%12]
+def zhi_prev(z): return dizhi[(dizhi.index(z)-1)%12]
 
-def zhi_prev(z):
-    return dizhi[(dizhi.index(z) - 1) % 12]
-
-# 生成六十甲子列表（0为甲子）
+# 六十甲子表
 def ganzhi_list():
-    gzs = []
-    for i in range(60):
-        gzs.append(tiangan[i % 10] + dizhi[i % 12])
-    return gzs
-
+    return [tiangan[i%10] + dizhi[i%12] for i in range(60)]
 GZS_LIST = ganzhi_list()
 
-# 年份与干支映射（默认范围 1900-2100，可根据需要调整）
+# 年份到干支映射（用于查找年份）
 def year_ganzhi_map(start=1900, end=2100):
     gzs = GZS_LIST
-    # 1984 为甲子年（常用基准）
-    base_year = 1984
-    year_map = {}
-    for year in range(start, end + 1):
-        index = (year - base_year) % 60
-        year_map[year] = gzs[index]
-    return year_map
+    base_year = 1984  # 1984 甲子年为基准
+    return {y: gzs[(y - base_year) % 60] for y in range(start, end+1)}
 
-# 计算某一柱（如 "乙卯"）的吉凶干支（保持你原有逻辑）
+# 吉凶计算（保持你原逻辑）
 def calc_jixiong(gz):
-    # gz 应为两个字，形如 "乙卯"
-    if not gz or len(gz) < 2:
-        return {"吉": [], "凶": []}
-    tg = gz[0]
-    dz = gz[1]
-    results = {"吉": [], "凶": []}
-
-    tg_he = gan_he.get(tg, "")
-    dz_he = zhi_he.get(dz, "")
-    tg_ch = gan_chong.get(tg, "")
-    dz_ch = zhi_chong.get(dz, "")
-
+    if not gz or len(gz)<2: return {"吉":[], "凶":[]}
+    tg, dz = gz[0], gz[1]
+    res = {"吉":[], "凶":[]}
+    tg_he = gan_he.get(tg,""); dz_he = zhi_he.get(dz,"")
+    tg_ch = gan_chong.get(tg,""); dz_ch = zhi_chong.get(dz,"")
     if tg_he and dz_he:
-        shuang_he = tg_he + dz_he
-        jin_yi = tg_he + zhi_next(dz_he)
-        results["吉"].extend([shuang_he, jin_yi])
-
+        res["吉"].append(tg_he + dz_he)
+        res["吉"].append(tg_he + zhi_next(dz_he))
     if tg_ch and dz_ch:
-        shuang_ch = tg_ch + dz_ch
-        tui_yi = tg_ch + zhi_prev(dz_ch)
-        results["凶"].extend([shuang_ch, tui_yi])
+        res["凶"].append(tg_ch + dz_ch)
+        res["凶"].append(tg_ch + zhi_prev(dz_ch))
+    return res
 
-    return results
-
-# 分析整套八字（年柱、月柱、日柱、时柱），返回（吉集合, 凶集合）
-def analyze_bazi(year_zhu, month_zhu, day_zhu, time_zhu):
-    pillars = [p for p in [year_zhu, month_zhu, day_zhu] if p]
-    if time_zhu and time_zhu.strip().lower() != "不知道":
-        pillars.append(time_zhu)
-    all_ji = []
-    all_xiong = []
+def analyze_bazi(nianzhu, yuezhu, rizhu, shizhu):
+    pillars = [p for p in (nianzhu, yuezhu, rizhu) if p]
+    if shizhu and str(shizhu).strip() and str(shizhu).strip()!="不知道":
+        pillars.append(shizhu)
+    all_ji=[]; all_xiong=[]
     for p in pillars:
-        res = calc_jixiong(p)
-        all_ji.extend(res["吉"])
-        all_xiong.extend(res["凶"])
+        r = calc_jixiong(p)
+        all_ji.extend(r["吉"]); all_xiong.extend(r["凶"])
     # 去重并保持顺序
     def uniq(seq):
-        seen = set()
-        out = []
+        seen=set(); out=[]
         for s in seq:
             if s not in seen:
-                seen.add(s)
-                out.append(s)
+                seen.add(s); out.append(s)
         return out
     return uniq(all_ji), uniq(all_xiong)
 
-# ---- 八字推算：如果 sxtwl 可用，则用 sxtwl 精确推算年/月/日/时柱 ----
-def solar_to_bazi_sxtwl(y, m, d, hour=None, minute=None):
+# ------------------ 日柱：锚点法（anchor） ------------------
+ANCHOR_DATE = date(1984,1,1)   # 你给定的锚点
+ANCHOR_GZ = "甲午"
+ANCHOR_IDX = GZS_LIST.index(ANCHOR_GZ)
+
+def day_ganzhi_by_anchor(y, m, d, hour=None, minute=None):
     """
-    使用 sxtwl 完成：年柱（月用立春界）、月柱（日用立春界）、日柱、时柱（若提供）
-    23:00 及以后的出生视为次日（按你的规则：23:10 属次日）
-    返回 (年柱, 月柱, 日柱, 时柱 or None)
+    使用锚点法：以 1984-01-01 (甲午) 为基点，按天数差计算目标日期日干支。
+    若时间在 23:00 及以后（含23:00），按次日计算（你提供的规则）。
     """
-    # 先按分钟判断是否归到下一日
-    if hour is not None:
-        # 如果用户填了小时分钟并且 >=23:00（含23:00），把日子视为 +1 日
-        if hour >= 23:
-            dd = date(y, m, d) + timedelta(days=1)
-            y2, m2, d2 = dd.year, dd.month, dd.day
-        else:
-            y2, m2, d2 = y, m, d
+    # 处理日界线：23:00 及以后归入次日
+    if hour is not None and hour >= 23:
+        target = date(y,m,d) + timedelta(days=1)
     else:
-        y2, m2, d2 = y, m, d
+        target = date(y,m,d)
+    delta_days = (target - ANCHOR_DATE).days
+    idx = (ANCHOR_IDX + delta_days) % 60
+    return GZS_LIST[idx]
 
-    # 用 sxtwl.fromSolar 获取该（调整后）日期对象
-    dayobj = sxtwl.fromSolar(y2, m2, d2)
+# ------------------ 月柱（节气优先 / 可手动指定月支） ------------------
+# 五虎遁：年干决定寅月起始天干
+def month_stem_by_fihu_dun(year_tg, month_branch):
+    if year_tg in ("甲","己"): start_stem="丙"
+    elif year_tg in ("乙","庚"): start_stem="戊"
+    elif year_tg in ("丙","辛"): start_stem="庚"
+    elif year_tg in ("丁","壬"): start_stem="壬"
+    elif year_tg in ("戊","癸"): start_stem="甲"
+    else: start_stem="丙"
+    start_idx = tiangan.index(start_stem)
+    offset = (dizhi.index(month_branch) - dizhi.index("寅")) % 12
+    stem_idx = (start_idx + offset) % 10
+    return tiangan[stem_idx] + month_branch
 
-    # 年、月、日（以立春为界的 getYearGZ/getMonthGZ/getDayGZ）
-    ygz = dayobj.getYearGZ()   # 默认以立春为界 (sxtwl 文档)
-    mgz = dayobj.getMonthGZ()
-    dgz = dayobj.getDayGZ()
+# 近似节气边界表（回退使用）
+APPROX_JIEQI = {
+    "立春": (2,4), "惊蛰": (3,6), "清明": (4,5), "立夏": (5,6),
+    "芒种": (6,6), "小暑": (7,7), "立秋": (8,7), "白露": (9,7),
+    "寒露": (10,8), "立冬": (11,7), "大雪": (12,7), "小寒": (1,6)
+}
 
-    Gan = tiangan
-    Zhi = dizhi
+def get_month_branch_approx(year, month, day):
+    """回退：以近似节气表判断月支（立春—惊蛰=寅月...）"""
+    bd = date(year, month, day)
+    keys = ["立春","惊蛰","清明","立夏","芒种","小暑","立秋","白露","寒露","立冬","大雪","小寒"]
+    seq=[]
+    for k in keys:
+        m,d = APPROX_JIEQI[k]
+        yr = year if not (k=="小寒" and m==1) else year+1
+        seq.append((k, date(yr,m,d)))
+    for i in range(len(seq)):
+        s = seq[i][1]; e = seq[i+1][1] if i+1<len(seq) else seq[0][1].replace(year=seq[0][1].year+1)
+        if s <= bd < e:
+            return ["寅","卯","辰","巳","午","未","申","酉","戌","亥","子","丑"][i]
+    # fallback by month
+    return dizhi[(month+10)%12]
 
-    year_pillar = Gan[ygz.tg] + Zhi[ygz.dz]
-    month_pillar = Gan[mgz.tg] + Zhi[mgz.dz]
-    day_pillar = Gan[dgz.tg] + Zhi[dgz.dz]
+# ------------------ 时柱（分钟精确） 五鼠遁 ------------------
+def time_ganzhi_by_minute(day_gz, hour, minute):
+    if hour is None or hour<0: return "不知道"
+    total_min = hour*60 + (minute or 0)
+    # 子时: 23:00-23:59 & 0:00-0:59
+    if total_min >= 23*60:
+        dz_idx = 0
+    else:
+        dz_idx = ((total_min + 60)//120) % 12
+    branch = dizhi[dz_idx]
+    day_tg = day_gz[0]
+    if day_tg in ("甲","己"): start = tiangan.index("甲")
+    elif day_tg in ("乙","庚"): start = tiangan.index("丙")
+    elif day_tg in ("丙","辛"): start = tiangan.index("戊")
+    elif day_tg in ("丁","壬"): start = tiangan.index("庚")
+    elif day_tg in ("戊","癸"): start = tiangan.index("壬")
+    else: start = 0
+    tg_idx = (start + dz_idx) % 10
+    return tiangan[tg_idx] + branch
 
-    hour_pillar = None
-    if hour is not None and (str(hour).strip().lower() != "不知道"):
-        # sxtwl 提供 dayobj.getHourGZ(hour) ：直接传入 0-23 的小时即可，
-        # 它内部处理早子/晚子分界（分早晚子时）
+# ------------------ 合并推算主流程 ------------------
+def calc_bazi_from_solar(year, month, day, hour=None, minute=0, manual_month_branch=None):
+    """
+    返回 (年柱, 月柱, 日柱, 时柱, source_info)
+    - 年柱：使用 sxtwl（若可用）按立春规则或近似 2/4 划分
+    - 月柱：若 manual_month_branch 提供（'寅','卯'...），用五虎遁计算；否则 sxtwl monthGZ（若可用）或近似
+    - 日柱：**使用锚点法**（你提供的算法）
+    - 时柱：五鼠遁（分钟精确）
+    """
+    source = []
+    # 年柱：尽量用 sxtwl.fromSolar -> getYearGZ；否则近似（以 立春 2/4 分界）
+    year_p = None; month_p = None; day_p = None; hour_p = None
+    if HAVE_SXTWL:
         try:
-            hgz = dayobj.getHourGZ(hour)
-            hour_pillar = Gan[hgz.tg] + Zhi[hgz.dz]
+            dayobj = sxtwl.fromSolar(int(year), int(month), int(day))
+            ygz = dayobj.getYearGZ(); mgz = dayobj.getMonthGZ(); dgz = dayobj.getDayGZ()
+            year_p = tiangan[ygz.tg] + dizhi[ygz.dz]
+            # 如果用户手动指定 month branch，我们会用五虎遁，用 sxtwl 仅作为参考
+            if manual_month_branch:
+                month_p = month_stem_by_fihu_dun(year_p[0], manual_month_branch)
+            else:
+                month_p = tiangan[mgz.tg] + dizhi[mgz.dz]
+            day_sxtwl = tiangan[dgz.tg] + dizhi[dgz.dz]
+            source.append("sxtwl")
         except Exception:
-            # 兜底：也可以使用 sxtwl.getShiGz(day_gz.tg, hour)
-            try:
-                d_tg = dgz.tg
-                hgz2 = sxtwl.getShiGz(d_tg, hour)
-                hour_pillar = Gan[hgz2.tg] + Zhi[hgz2.dz]
-            except Exception:
-                hour_pillar = None
+            year_p = None
+    if year_p is None:
+        # 近似年柱（立春固定 2/4）
+        birth_dt = datetime.datetime(year, month, day, hour or 0, minute or 0)
+        lichun = datetime.datetime(year,2,4,0,0)
+        year_for = year if birth_dt >= lichun else year-1
+        year_p = GZS_LIST[(year_for - 1984) % 60]
+        source.append("approx-year")
 
-    return year_pillar, month_pillar, day_pillar, hour_pillar
-
-# ---- 备用：简单（近似）推算（当 sxtwl 不可用时启用） ----
-# 注意：这是近似算法（以 立春 固定为 2 月 4 日 00:00 作分界），日柱使用基于 JDN 的简易映射（尽力保证一致性）
-def approximate_solar_to_bazi(y, m, d, hour=None, minute=None):
-    # 年柱（以立春为界，近似以每年固定 2/4 00:00 为立春时间）
-    birth_dt = datetime.datetime(y, m, d, hour or 0, minute or 0)
-    lichun_dt = datetime.datetime(y, 2, 4, 0, 0)
-    # 若在立春之前，年用上一年
-    if birth_dt >= lichun_dt:
-        year_for_gz = y
-    else:
-        year_for_gz = y - 1
-    # 年柱基于 1984 甲子为基准
-    index = (year_for_gz - 1984) % 60
-    year_pillar = GZS_LIST[index]
-
-    # 月柱：按照你给出的五虎遁规则近似计算（正月为寅月）
-    # 找出正月（寅月）对应的天干起始，取年天干进行映射
-    year_tg = year_pillar[0]
-    # 对应规则：
-    # 甲/己 -> 寅月天干 丙
-    # 乙/庚 -> 戊
-    # 丙/辛 -> 庚
-    # 丁/壬 -> 壬
-    # 戊/癸 -> 甲
-    if year_tg in ("甲", "己"):
-        first_month_tg = "丙"
-    elif year_tg in ("乙", "庚"):
-        first_month_tg = "戊"
-    elif year_tg in ("丙", "辛"):
-        first_month_tg = "庚"
-    elif year_tg in ("丁", "壬"):
-        first_month_tg = "壬"
-    else:
-        first_month_tg = "甲"
-
-    # 确定出生所在的节气月（用固定节气边界近似）
-    # 我们用常规农历月份近似：正月=寅月=2月（这个近似在节气附近会有偏差）
-    # 更稳妥：用太阳节气来划分，这里采用近似：用每月的中位日划分（仅作 fallback）
-    # 先把公历月转换为 1..12 的月支（寅月 为正月），建立月支表：
-    # 寅、卯、辰、巳、午、未、申、酉、戌、亥、子、丑 对应 月序 1..12
-    # 用 立春（2月4日）为寅月起点，计算相对于立春的月序
-    # 计算差月数：
-    ref = datetime.date(y, 2, 4)
-    cur = datetime.date(y, m, d)
-    if cur >= ref:
-        delta_months = ((cur.year - ref.year) * 12 + (cur.month - ref.month))
-    else:
-        # 属于上一年对应的月序
-        delta_months = -1 + ((cur.year - ref.year) * 12 + (cur.month - ref.month))
-    # 月支 index （0 对应 寅）
-    month_zhi_idx = (delta_months) % 12
-    month_branch = dizhi[(2 + month_zhi_idx) % 12]  # 因为 dizhi 列表的 0 为子，寅 是 index 2
-
-    # 月天干由正月天干向后顺推 (正月对应 first_month_tg)
-    tg_start_index = tiangan.index(first_month_tg)
-    month_tg_index = (tg_start_index + month_zhi_idx) % 10
-    month_pillar = tiangan[month_tg_index] + month_branch
-
-    # 日柱：用 JDN -> 索引 的粗算法（选取已知参考点调校）
-    # 使用参考：2000-01-01 在许多万年历中为 戊午（如果这参考与本地万年历有差异，结果会有偏差）
-    # 先计算儒略日数（JDN，Fliegel-Van Flandern）
-    def jdn(y0, m0, d0):
-        a = (14 - m0) // 12
-        y_ = y0 + 4800 - a
-        m_ = m0 + 12 * a - 3
-        jdnv = d0 + ((153 * m_ + 2) // 5) + 365 * y_ + y_ // 4 - y_ // 100 + y_ // 400 - 32045
-        return jdnv
-    j = jdn(y, m, d)
-    # 参考：2000-01-01 jdn = 2451545 -> 对应 戊午（在 GZS_LIST 索引中为 index_x）
-    # 我们通过网络常见查询可知 2000-01-01 常标为 戊午（索引 54）
-    ref_jdn = 2451545
-    ref_idx = GZS_LIST.index("戊午")  # 若此处 KeyError，说明列表中缺该项（不应该）
-    idx = (ref_idx + (j - ref_jdn)) % 60
-    day_pillar = GZS_LIST[idx]
-
-    # 时柱：如果用户没有时间或写不知道则跳过；否则按照日干推算（五鼠遁近似）
-    hour_pillar = None
-    if hour is not None and str(hour).strip().lower() != "不知道":
-        # 子时判断（23:00 归次日）。我们做如下：若 hour >=23 -> 视为次日子时（日柱已按当日/次日处理）
-        hour_for_calc = hour
-        # 根据日干推时干（五鼠遁）
-        dg = day_pillar[0]
-        # 构造子时序 0->子,1->丑,2->寅 ... 每两小时一个地支，子时为 23-1（我们只传小时，分钟忽略）
-        # 确定地支：
-        # 23:00-0:59 -> 子 时段，我们将 23..0..1 归到 子 时段（用小时范围判断有点粗）
-        if hour >= 23 or hour < 1:
-            z_branch = "子"
+        if manual_month_branch:
+            month_p = month_stem_by_fihu_dun(year_p[0], manual_month_branch)
         else:
-            branch_index = ((hour + 1) // 2) % 12  # 0->子,1->丑,...  但需要映射
-            # map 0->子,1->丑,2->寅...
-            z_branch = dizhi[branch_index]
-        # 时干按五鼠遁（手工列个表，基于日干）
-        # 生成每个日干对应子时的天干
-        five_mouse = {
-            "甲": ["甲","乙","丙","丁","戊","己","庚","辛","壬","癸","甲","乙"],
-            "己": ["甲","乙","丙","丁","戊","己","庚","辛","壬","癸","甲","乙"],
-            "乙": ["丙","丁","戊","己","庚","辛","壬","癸","甲","乙","丙","丁"],
-            "庚": ["丙","丁","戊","己","庚","辛","壬","癸","甲","乙","丙","丁"],
-            "丙": ["戊","己","庚","辛","壬","癸","甲","乙","丙","丁","戊","己"],
-            "辛": ["戊","己","庚","辛","壬","癸","甲","乙","丙","丁","戊","己"],
-            "丁": ["庚","辛","壬","癸","甲","乙","丙","丁","戊","己","庚","辛"],
-            "壬": ["庚","辛","壬","癸","甲","乙","丙","丁","戊","己","庚","辛"],
-            "戊": ["壬","癸","甲","乙","丙","丁","戊","己","庚","辛","壬","癸"],
-            "癸": ["壬","癸","甲","乙","丙","丁","戊","己","庚","辛","壬","癸"],
-        }
-        # 确定地支序号（子为0，丑为1，...）
-        dz_idx = dizhi.index(z_branch)
-        # 找到时干
+            month_branch = get_month_branch_approx(year, month, day)
+            month_p = month_stem_by_fihu_dun(year_p[0], month_branch)
+        day_sxtwl = None
+
+    # 日柱：用锚点法（你提供的算法）
+    day_p = day_ganzhi_by_anchor(year, month, day, hour, minute)
+
+    # 时柱：五鼠遁分钟精确
+    hour_p = None
+    if hour is not None and hour >= 0:
+        hour_p = time_ganzhi_by_minute(day_p, hour, minute or 0)
+
+    # 如果 sxtwl 可用，比较 sxtwl 的日柱（仅作对比提示，不覆盖锚点结果）
+    sxtwl_day = None
+    if HAVE_SXTWL:
         try:
-            tg_for_hour = five_mouse.get(dg, five_mouse["甲"])[dz_idx]
-            hour_pillar = tg_for_hour + z_branch
+            # if dayobj exists from earlier, use its dayGZ; else try to create
+            if 'dayobj' not in locals():
+                dayobj = sxtwl.fromSolar(int(year), int(month), int(day))
+            dgz2 = dayobj.getDayGZ()
+            sxtwl_day = tiangan[dgz2.tg] + dizhi[dgz2.dz]
         except Exception:
-            hour_pillar = None
+            sxtwl_day = None
 
-    return year_pillar, month_pillar, day_pillar, hour_pillar
+    source_info = ", ".join(source)
+    return year_p, month_p, day_p, hour_p, sxtwl_day, source_info
 
-# ---- UI 显示函数（保证定义在上层，避免未定义错误） ----
-def show_result(yi_list, xiong_list, year_map, current_year):
-    """
-    yi_list, xiong_list: list of Ganzhi strings like ['庚戌', '庚亥']
-    year_map: dict year -> ganzhi
-    current_year: int
-    在 Streamlit 中以颜色显示
-    """
-    # 配色
-    color_good = "#c21807"   # 喜庆（红）
-    color_bad = "#0b0b0b"    # 大凶（黑）
-    st.markdown("### ✅ 吉年（喜庆）")
-    if not yi_list:
-        st.write("无吉年（按当前规则）")
+# ------------------ 美化输出（吉/凶） ------------------
+def show_result_beauty(ji_list, xiong_list, year_map, current_year):
+    # nicer colors & boxed layout
+    color_good = "#0b6623"   # 深绿
+    color_bad = "#8B0000"    # 暗红
+    # 吉年
+    st.markdown("## 🎉 吉年")
+    if not ji_list:
+        st.info("无可列举的吉年（按当前规则）")
     else:
-        for gz in yi_list:
-            # 找出对应年份
-            years = [y for y, g in year_map.items() if g == gz]
-            if not years:
-                continue
-            # 排序
+        for gz in ji_list:
+            years = [y for y,g in year_map.items() if g == gz]
+            if not years: continue
             years.sort()
             parts = []
             for y in years:
                 s = f"{gz}{y}年"
                 if y >= current_year:
-                    s = f"**{s} ★**"
+                    s = f"<b>{s} ★</b>"
                 parts.append(s)
-            st.markdown(f'<div style="color:{color_good};font-weight:600">{gz}: {"，".join(parts)}</div>', unsafe_allow_html=True)
-
-    st.markdown("### 🔴 凶年（大凶）")
+            html = f"<div style='border-left:4px solid {color_good};padding:8px;margin:6px 0;background:#f7fff7'>{gz}: {'，'.join(parts)}</div>"
+            st.markdown(html, unsafe_allow_html=True)
+    # 凶年
+    st.markdown("## ☠️ 凶年")
     if not xiong_list:
-        st.write("无凶年（按当前规则）")
+        st.info("无可列举的凶年（按当前规则）")
     else:
         for gz in xiong_list:
-            years = [y for y, g in year_map.items() if g == gz]
-            if not years:
-                continue
+            years = [y for y,g in year_map.items() if g == gz]
+            if not years: continue
             years.sort()
-            parts = []
+            parts=[]
             for y in years:
                 s = f"{gz}{y}年"
                 if y >= current_year:
-                    s = f"**{s} ★**"
+                    s = f"<b>{s} ★</b>"
                 parts.append(s)
-            st.markdown(f'<div style="color:{color_bad};font-weight:600">{gz}: {"，".join(parts)}</div>', unsafe_allow_html=True)
+            html = f"<div style='border-left:4px solid {color_bad};padding:8px;margin:6px 0;background:#fff7f7'>{gz}: {'，'.join(parts)}</div>"
+            st.markdown(html, unsafe_allow_html=True)
 
-# ---- Streamlit 页面布局 ----
-st.set_page_config(page_title="八字吉凶查询", layout="centered")
-st.title("八字吉凶年份查询")
+# ------------------ Streamlit UI ------------------
+st.set_page_config(page_title="八字推算 - 精准（锚点日法）", layout="centered")
+st.title("八字推算与吉凶年份（中文界面）")
 
-st.write("请选择输入方式，并填写出生信息（时可精确到分钟或填‘不知道’以跳过时柱）")
+st.markdown("请选择输入方式，支持阳历/农历/四柱；可手动指定月支（若你更信任手工月支），日柱采用锚点法（1984-01-01 甲午）计算。")
 
-mode = st.selectbox("输入方式", ["阳历出生（公历）", "农历出生（阴历）", "四柱八字（已知）"])
+mode = st.selectbox("输入方式", ["阳历生日", "农历生日", "四柱八字（手动）"])
 
-# 公历输入
-if mode == "阳历出生（公历）":
-    col1, col2 = st.columns([1,1])
+if mode == "阳历生日":
+    col1, col2 = st.columns([2,1])
     with col1:
-        year = st.number_input("阳历年", min_value=1900, max_value=2100, value=1990, step=1)
-        month = st.selectbox("月", list(range(1,13)), index=4)
-        day = st.number_input("日", min_value=1, max_value=31, value=18, step=1)
+        byear = st.number_input("出生年", min_value=1900, max_value=2100, value=1990, step=1)
+        bmonth = st.selectbox("出生月（公历）", list(range(1,13)), index=4)
+        bday = st.number_input("出生日", min_value=1, max_value=31, value=18, step=1)
     with col2:
-        hour = st.number_input("小时（24h，如未知填入-1）", min_value=-1, max_value=23, value=8, step=1)
-        minute = st.number_input("分钟（0-59，如未知填0）", min_value=0, max_value=59, value=0, step=1)
-
-    if st.button("计算八字并查询吉凶"):
-        # 如果时输入为 -1 或 "不知道" 则视为未知
-        hour_input = None if hour == -1 else int(hour)
-        minute_input = None if hour == -1 else int(minute)
+        bhour = st.number_input("小时（0-23；未知填 -1）", min_value=-1, max_value=23, value=-1, step=1)
+        bmin = st.number_input("分钟（0-59）", min_value=0, max_value=59, value=0, step=1)
+    # 手动月支控制
+    manual_month = st.checkbox("手动指定月支（地支，如：寅、卯、辰...）", value=False)
+    manual_branch = None
+    if manual_month:
+        manual_branch = st.selectbox("请选择月支（地支）", dizhi, index=2)  # 默认寅
+    if st.button("推算八字并查询吉凶"):
+        hour_val = None if bhour == -1 else int(bhour)
+        min_val = int(bmin) if hour_val is not None else 0
         try:
-            if HAVE_SXTWL:
-                y_p, m_p, d_p, h_p = solar_to_bazi_sxtwl(int(year), int(month), int(day), hour_input, minute_input)
-            else:
-                y_p, m_p, d_p, h_p = approximate_solar_to_bazi(int(year), int(month), int(day), hour_input, minute_input)
+            y_p, m_p, d_p, h_p, sxtwl_day, src = calc_bazi_from_solar(int(byear), int(bmonth), int(bday), hour_val, min_val, manual_month_branch=manual_branch)
+            st.markdown("### 推算结果（四柱）")
+            st.write(f"年柱：{y_p} ； 月柱：{m_p} ； 日柱（锚点法）：{d_p} ； 时柱：{h_p or '不知道'}")
+            if sxtwl_day:
+                if sxtwl_day != d_p:
+                    st.caption(f"（注：本地 sxtwl 计算得日柱为 {sxtwl_day}，程序当前以锚点法 {d_p} 为主；若你信任万年历可选择以 sxtwl 为准。）")
+                else:
+                    st.caption("（sxtwl 日柱与锚点法一致）")
+            # 吉凶
+            ji, xiong = analyze_bazi(y_p, m_p, d_p, h_p)
+            ymap = year_ganzhi_map(1900,2100); cur = datetime.datetime.now().year
+            show_result_beauty(ji, xiong, ymap, cur)
         except Exception as e:
-            st.error(f"八字推算出错：{e}")
-            y_p = m_p = d_p = h_p = None
+            st.error(f"计算出错：{e}")
 
-        # 显示八字
-        st.markdown("#### 推算的四柱（可能包含近似）")
-        st.write(f"年柱：{y_p or '未知'} ； 月柱：{m_p or '未知'} ； 日柱：{d_p or '未知'} ； 时柱：{h_p or '未知'}")
-
-        # 分析吉凶（保持你原来功能）
-        ji_list, xiong_list = analyze_bazi(y_p, m_p, d_p, h_p)
-        year_map = year_ganzhi_map(1900, 2100)
-        cur_year = datetime.datetime.now().year
-        show_result(ji_list, xiong_list, year_map, cur_year)
-
-# 农历输入
-elif mode == "农历出生（阴历）":
-    col1, col2 = st.columns([1,1])
+elif mode == "农历生日":
+    col1, col2 = st.columns([2,1])
     with col1:
-        ly = st.number_input("农历年（数字）", min_value=1900, max_value=2100, value=1990, step=1)
-        lm = st.number_input("农历月（数字）", min_value=1, max_value=12, value=5, step=1)
+        ly = st.number_input("农历年", min_value=1900, max_value=2100, value=1990, step=1)
+        lm = st.number_input("农历月（1-12）", min_value=1, max_value=12, value=5, step=1)
         isleap = st.checkbox("是否闰月", value=False)
-        ld = st.number_input("农历日（数字）", min_value=1, max_value=30, value=18, step=1)
+        ld = st.number_input("农历日", min_value=1, max_value=30, value=18, step=1)
     with col2:
-        hour = st.number_input("小时（24h，如未知填入-1）", min_value=-1, max_value=23, value=8, step=1)
-        minute = st.number_input("分钟（0-59，如未知填0）", min_value=0, max_value=59, value=0, step=1)
-
-    if st.button("从农历推算八字并查询吉凶"):
-        hour_input = None if hour == -1 else int(hour)
-        minute_input = None if hour == -1 else int(minute)
+        bhour = st.number_input("小时（0-23；未知填 -1）", min_value=-1, max_value=23, value=-1, step=1)
+        bmin = st.number_input("分钟（0-59）", min_value=0, max_value=59, value=0, step=1)
+    manual_month = st.checkbox("手动指定月支（地支，如：寅、卯、辰...）", value=False)
+    manual_branch = None
+    if manual_month:
+        manual_branch = st.selectbox("请选择月支（地支）", dizhi, index=2)
+    if st.button("从农历推算并查询"):
+        hour_val = None if bhour == -1 else int(bhour)
+        min_val = int(bmin) if hour_val is not None else 0
         try:
+            # 先把农历转阳历（使用内置算法：try sxtwl.fromLunar else use Converter fallback）
+            solar_y = None
             if HAVE_SXTWL:
-                # sxtwl.fromLunar(year, month, day, isLeap) 或 fromLunar(year, month, day)（部分版本差异）
                 try:
-                    dayobj = sxtwl.fromLunar(int(ly), int(lm), int(ld), bool(isleap))
-                except TypeError:
-                    # 有的版本只需要三参
-                    dayobj = sxtwl.fromLunar(int(ly), int(lm), int(ld))
-                ygz = dayobj.getYearGZ()
-                mgz = dayobj.getMonthGZ()
-                dgz = dayobj.getDayGZ()
-                Gan = tiangan; Zhi = dizhi
-                y_p = Gan[ygz.tg] + Zhi[ygz.dz]
-                m_p = Gan[mgz.tg] + Zhi[mgz.dz]
-                d_p = Gan[dgz.tg] + Zhi[dgz.dz]
-                h_p = None
-                if hour_input is not None:
-                    # 若小时大于等于23则需先 +1 天并重新 fromSolar 以便时柱正确
-                    # 简化：直接用 dayobj.getHourGZ(hour)
+                    # some sxtwl.fromLunar accept 4 params (year,month,day,isLeap)
                     try:
-                        hgz = dayobj.getHourGZ(hour_input)
-                        h_p = Gan[hgz.tg] + Zhi[hgz.dz]
-                    except Exception:
-                        h_p = None
-            else:
-                # 退化为近似：把农历转公历并调用近似函数（这里简单地尝试用 sxtwl 不存在时的近似行为）
-                y_p, m_p, d_p, h_p = approximate_solar_to_bazi(int(ly), int(lm), int(ld), hour_input, minute_input)
+                        sday = sxtwl.fromLunar(int(ly), int(lm), int(ld), bool(isleap))
+                    except TypeError:
+                        sday = sxtwl.fromLunar(int(ly), int(lm), int(ld))
+                    # sday -> getSolar / getYear / getMonth / getDay maybe available
+                    # Try to extract solar date
+                    sy = sday.getSolar()
+                    solar_y, solar_m, solar_d = sy.getYear(), sy.getMonth(), sy.getDay()
+                except Exception:
+                    solar_y = None
+            if solar_y is None:
+                # fallback: use lunarcalendar Converter
+                from lunarcalendar import Converter, Solar, Lunar
+                lunar_obj = Lunar(int(ly), int(lm), int(ld), bool(isleap))
+                solar = Converter.Lunar2Solar(lunar_obj)
+                solar_y, solar_m, solar_d = solar.year, solar.month, solar.day
+
+            y_p, m_p, d_p, h_p, sxtwl_day, src = calc_bazi_from_solar(solar_y, solar_m, solar_d, hour_val, min_val, manual_month_branch=manual_branch)
+            st.markdown("### 推算结果（四柱）")
+            st.write(f"阳历对应：{solar_y}年{solar_m}月{solar_d}日")
+            st.write(f"年柱：{y_p} ； 月柱：{m_p} ； 日柱（锚点法）：{d_p} ； 时柱：{h_p or '不知道'}")
+            if sxtwl_day and sxtwl_day != d_p:
+                st.caption(f"（sxtwl 计算的日柱为 {sxtwl_day}，程序以锚点法 {d_p} 为主）")
+            ji, xiong = analyze_bazi(y_p, m_p, d_p, h_p)
+            ymap = year_ganzhi_map(1900,2100); cur = datetime.datetime.now().year
+            show_result_beauty(ji, xiong, ymap, cur)
         except Exception as e:
-            st.error(f"农历转换或八字推算出错：{e}")
-            y_p = m_p = d_p = h_p = None
+            st.error(f"转换或计算出错：{e}")
 
-        st.markdown("#### 推算的四柱（可能包含近似）")
-        st.write(f"年柱：{y_p or '未知'} ； 月柱：{m_p or '未知'} ； 日柱：{d_p or '未知'} ； 时柱：{h_p or '未知'}")
-        ji_list, xiong_list = analyze_bazi(y_p, m_p, d_p, h_p)
-        year_map = year_ganzhi_map(1900, 2100)
-        cur_year = datetime.datetime.now().year
-        show_result(ji_list, xiong_list, year_map, cur_year)
-
-# 四柱手动输入
-else:
-    st.markdown("请输入四柱（例：乙卯、戊寅 等）。若时柱不知道，请输入：不知道")
-    col1, col2 = st.columns(2)
-    with col1:
-        year_zhu = st.text_input("年柱（例如：庚午）", value="")
-        month_zhu = st.text_input("月柱（例如：辛巳）", value="")
-    with col2:
-        day_zhu = st.text_input("日柱（例如：丙午）", value="")
-        time_zhu = st.text_input("时柱（如未知写 不知道）", value="不知道")
-    if st.button("计算吉凶年份"):
-        # 校验最少需要 年 月 日
-        if not year_zhu or not month_zhu or not day_zhu:
-            st.error("请至少填写年柱、月柱、日柱（每项形如：甲子/乙丑/丙寅 等）")
+else:  # 四柱手动输入
+    st.markdown("请直接输入四柱（例：甲子、乙丑、丙寅）。时柱可填写“不知道”或空以跳过。")
+    ny = st.text_input("年柱（如：甲子）")
+    my = st.text_input("月柱（如：乙丑）")
+    dy = st.text_input("日柱（如：丙寅）")
+    sy = st.text_input("时柱（如：不知道）", value="不知道")
+    if st.button("查询吉凶年份"):
+        if not (ny and my and dy):
+            st.error("请至少填写年柱、月柱、日柱")
         else:
-            ji_list, xiong_list = analyze_bazi(year_zhu.strip(), month_zhu.strip(), day_zhu.strip(), time_zhu.strip())
-            year_map = year_ganzhi_map(1900, 2100)
-            cur_year = datetime.datetime.now().year
-            st.markdown("#### 你输入的四柱")
-            st.write(f"年柱：{year_zhu}；月柱：{month_zhu}；日柱：{day_zhu}；时柱：{time_zhu}")
-            show_result(ji_list, xiong_list, year_map, cur_year)
-
-# ---- 页面尾部说明（简短） ----
-st.markdown("---")
-st.caption("说明：程序优先使用本地高精度日历库（若可用）以保证节气与干支准确；若该库不可用，程序将启用内置近似算法，节气边界处可能存在差异。")
-
+            ji, xiong = analyze_bazi(ny.strip(), my.strip(), dy.strip(), sy.strip())
+            ymap = year_ganzhi_map(1900,2100); cur = datetime.datetime.now().year
+            st.markdown("### 你输入的四柱")
+            st.write(f"{ny}  {my}  {dy}  {sy}")
+            show_result_beauty(ji, xiong, ymap, cur)
