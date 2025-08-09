@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
 import datetime
+import sxtwl
 from lunarcalendar import Converter, Solar, Lunar
 
-# -------------- 八字吉凶计算相关代码 --------------
-
+# ----------------- 基础干支数据 -----------------
 tiangan = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
 dizhi = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
 
@@ -87,19 +87,42 @@ def analyze_bazi(nianzhu, yuezhu, rizhu, shizhu):
         all_xiong.update(res["凶"])
     return sorted(all_ji), sorted(all_xiong)
 
-# -------------- 八字推算辅助函数 --------------
+# ------------------ 立春和八字推算 ------------------
 
-def get_bazi_from_solar(year, month, day, hour):
+def get_li_chun_date(year):
+    """返回指定年份立春的阳历日期"""
+    cal = sxtwl.fromSolar(year, 1, 1)
+    for solar in cal.getJieQiList():
+        if solar["jieQi"] == 3:  # 立春节气编号
+            return datetime.date(solar["year"], solar["month"], solar["day"])
+    return datetime.date(year, 2, 4)
+
+def get_year_ganzhi_li_chun(year, month, day):
+    li_chun = get_li_chun_date(year)
+    birth_date = datetime.date(year, month, day)
+    adjusted_year = year if birth_date >= li_chun else year - 1
+    index = (adjusted_year - 4) % 60
+    return tiangan[index % 10] + dizhi[index % 12]
+
+def get_month_ganzhi_li_chun(year, month, day):
+    li_chun = get_li_chun_date(year)
+    birth_date = datetime.date(year, month, day)
     solar = Solar(year, month, day)
     lunar = Converter.Solar2Lunar(solar)
-    lichun = datetime.date(year, 2, 4)
-    bdate = datetime.date(year, month, day)
-    cyc_year = year if bdate >= lichun else year - 1
-    tg_index = (cyc_year - 4) % 10
-    dz_index = (cyc_year - 4) % 12
-    nianzhu = tiangan[tg_index] + dizhi[dz_index]
-    tg_m = (tg_index * 2 + lunar.month + 2) % 10
-    yuezhu = tiangan[tg_m] + dizhi[(lunar.month + 1) % 12]
+    lunar_month = lunar.month
+    li_chun_lunar = Converter.Solar2Lunar(Solar(li_chun.year, li_chun.month, li_chun.day))
+    li_chun_lunar_month = li_chun_lunar.month
+    month_offset = (lunar_month - li_chun_lunar_month) % 12
+    year_gz = get_year_ganzhi_li_chun(year, month, day)
+    tg_year = year_gz[0]
+    tg_year_index = tiangan.index(tg_year)
+    tg_index = (tg_year_index * 2 + month_offset + 2) % 10
+    dz_index = (2 + month_offset) % 12
+    return tiangan[tg_index] + dizhi[dz_index]
+
+def get_bazi_from_solar_li_chun(year, month, day, hour):
+    nianzhu = get_year_ganzhi_li_chun(year, month, day)
+    yuezhu = get_month_ganzhi_li_chun(year, month, day)
     base_date = datetime.date(1900, 1, 31)
     cur_date = datetime.date(year, month, day)
     delta_days = (cur_date - base_date).days
@@ -114,12 +137,7 @@ def get_bazi_from_solar(year, month, day, hour):
     shizhu = tiangan[tg_shi_index] + dz_shi
     return nianzhu, yuezhu, rizhu, shizhu
 
-def get_bazi_from_lunar(year, month, day, hour):
-    lunar = Lunar(year, month, day, False)
-    solar = Converter.Lunar2Solar(lunar)
-    return get_bazi_from_solar(solar.year, solar.month, solar.day, hour)
-
-# -------------- 结果展示函数 --------------
+# -------------------- 结果展示 ---------------------
 
 def show_result(ji_list, xiong_list):
     current_year = datetime.datetime.now().year
@@ -130,10 +148,10 @@ def show_result(ji_list, xiong_list):
             year_strs = []
             for y in sorted(years):
                 if y >= current_year:
-                    year_strs.append(f"<b>{gz}{y}年★</b>")
+                    year_strs.append(f"<b style='color:red'>{gz}{y}年★</b>")
                 else:
                     year_strs.append(f"{gz}{y}年")
-            st.markdown(f"<span style='color:red'>{gz}: {', '.join(year_strs)}</span>", unsafe_allow_html=True)
+            st.markdown(f"{gz}: {', '.join(year_strs)}", unsafe_allow_html=True)
     st.subheader("☠️ 凶年")
     for gz in xiong_list:
         years = [y for y, gz_y in year_ganzhi_map().items() if gz_y == gz]
@@ -141,24 +159,24 @@ def show_result(ji_list, xiong_list):
             year_strs = []
             for y in sorted(years):
                 if y >= current_year:
-                    year_strs.append(f"<b>{gz}{y}年★</b>")
+                    year_strs.append(f"<b style='color:#333'>{gz}{y}年★</b>")
                 else:
                     year_strs.append(f"{gz}{y}年")
-            st.markdown(f"<span style='color:#333'>{gz}: {', '.join(year_strs)}</span>", unsafe_allow_html=True)
+            st.markdown(f"{gz}: {', '.join(year_strs)}", unsafe_allow_html=True)
 
-# -------------- Streamlit 主界面 --------------
+# ---------------------- 主界面 ----------------------
 
 st.title("八字吉凶年份查询")
 
-input_mode = st.radio("请选择输入方式", ["阳历生日", "农历生日", "四柱八字"])
+input_mode = st.radio("请选择输入方式", ["阳历生日（立春换年）", "农历生日", "四柱八字"])
 
-if input_mode == "阳历生日":
+if input_mode == "阳历生日（立春换年）":
     birth_date = st.date_input("请选择阳历出生日期", min_value=datetime.date(1900, 1, 1))
     birth_hour = st.slider("请选择出生时辰（0-23时，未知请选-1）", -1, 23, -1)
     if st.button("开始推算八字并查询吉凶"):
         try:
             hour = birth_hour if birth_hour >= 0 else 0
-            nianzhu, yuezhu, rizhu, shizhu = get_bazi_from_solar(
+            nianzhu, yuezhu, rizhu, shizhu = get_bazi_from_solar_li_chun(
                 birth_date.year, birth_date.month, birth_date.day, hour
             )
             if birth_hour == -1:
@@ -177,8 +195,10 @@ elif input_mode == "农历生日":
     if st.button("开始推算八字并查询吉凶"):
         try:
             hour = birth_hour if birth_hour >= 0 else 0
-            nianzhu, yuezhu, rizhu, shizhu = get_bazi_from_lunar(
-                lunar_year, lunar_month, lunar_day, hour
+            # 先转阳历再用立春法推算，农历转阳历
+            solar = Converter.Lunar2Solar(Lunar(lunar_year, lunar_month, lunar_day, False))
+            nianzhu, yuezhu, rizhu, shizhu = get_bazi_from_solar_li_chun(
+                solar.year, solar.month, solar.day, hour
             )
             if birth_hour == -1:
                 shizhu = "不知道"
@@ -188,7 +208,7 @@ elif input_mode == "农历生日":
         except Exception as e:
             st.error(f"计算出错：{e}")
 
-else:
+else:  # 四柱八字直接输入
     year_zhu = st.text_input("请输入年柱（如 甲子）")
     month_zhu = st.text_input("请输入月柱（如 乙丑）")
     day_zhu = st.text_input("请输入日柱（如 丙寅）")
