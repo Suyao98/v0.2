@@ -87,24 +87,14 @@ def analyze_bazi(nianzhu, yuezhu, rizhu, shizhu):
         all_xiong.update(res["凶"])
     return sorted(all_ji), sorted(all_xiong)
 
-# --------- 用 sxtwl.Lunar() 找立春 ---------
+# ---- 用 sxtwl.Calendar 和 iterYearDays 找立春 ----
 
 def get_li_chun_date(year):
-    cal = sxtwl.Lunar()
-    jieqi_list = []
-    for month in range(1, 4):
-        for day in range(1, 32):
-            try:
-                solar = sxtwl.Solar(year, month, day)
-            except:
-                continue
-            lunar = cal.getLunarBySolar(solar)
-            jq = lunar.getJieQi()
-            if jq != -1:
-                jieqi_list.append((jq, datetime.date(year, month, day)))
-    for jq, dt in jieqi_list:
-        if jq == 3:  # 立春
-            return dt
+    cal = sxtwl.Calendar()
+    for solar_day in cal.iterYearDays(year):
+        lunar = cal.getLunarBySolar(solar_day)
+        if lunar.getJieQi() == 3:  # 3 是立春
+            return datetime.date(solar_day.getYear(), solar_day.getMonth(), solar_day.getDay())
     return datetime.date(year, 2, 4)
 
 def get_year_ganzhi_li_chun(year, month, day):
