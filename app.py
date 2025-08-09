@@ -4,7 +4,7 @@ import datetime
 import sxtwl
 from lunarcalendar import Converter, Solar, Lunar
 
-# ----------------- 基础干支数据 -----------------
+# ---------- 基础数据 ----------
 tiangan = ["甲", "乙", "丙", "丁", "戊", "己", "庚", "辛", "壬", "癸"]
 dizhi = ["子", "丑", "寅", "卯", "辰", "巳", "午", "未", "申", "酉", "戌", "亥"]
 
@@ -87,21 +87,24 @@ def analyze_bazi(nianzhu, yuezhu, rizhu, shizhu):
         all_xiong.update(res["凶"])
     return sorted(all_ji), sorted(all_xiong)
 
-# ------------------ 立春和八字推算 ------------------
+# --------- 用 sxtwl.Lunar() 找立春 ---------
 
 def get_li_chun_date(year):
-    cal = sxtwl.Calendar()
-    # 1-3月遍历寻找立春节气（编号3）
+    cal = sxtwl.Lunar()
+    jieqi_list = []
     for month in range(1, 4):
         for day in range(1, 32):
             try:
                 solar = sxtwl.Solar(year, month, day)
-                lunar = cal.getLunarBySolar(solar)
-                if lunar.getJieQi() == 3:  # 立春
-                    return datetime.date(year, month, day)
             except:
                 continue
-    # 未找到默认2月4日
+            lunar = cal.getLunarBySolar(solar)
+            jq = lunar.getJieQi()
+            if jq != -1:
+                jieqi_list.append((jq, datetime.date(year, month, day)))
+    for jq, dt in jieqi_list:
+        if jq == 3:  # 立春
+            return dt
     return datetime.date(year, 2, 4)
 
 def get_year_ganzhi_li_chun(year, month, day):
@@ -143,7 +146,7 @@ def get_bazi_from_solar_li_chun(year, month, day, hour):
     shizhu = tiangan[tg_shi_index] + dz_shi
     return nianzhu, yuezhu, rizhu, shizhu
 
-# -------------------- 结果展示 ---------------------
+# --------- 结果展示 ---------
 
 def show_result(ji_list, xiong_list):
     current_year = datetime.datetime.now().year
@@ -170,7 +173,7 @@ def show_result(ji_list, xiong_list):
                     year_strs.append(f"{gz}{y}年")
             st.markdown(f"{gz}: {', '.join(year_strs)}", unsafe_allow_html=True)
 
-# ---------------------- 主界面 ----------------------
+# --------- 主界面 ---------
 
 st.title("八字吉凶年份查询（立春换年、寅月起月）")
 
@@ -179,7 +182,7 @@ input_mode = st.radio("请选择输入方式", ["阳历生日（立春换年）"
 if input_mode == "阳历生日（立春换年）":
     birth_date = st.date_input("请选择阳历出生日期", min_value=datetime.date(1900, 1, 1))
     birth_hour = st.slider("请选择出生时辰（0-23时，未知请选-1）", -1, 23, -1)
-    if st.button("开始推算八字并查询吉凶"):
+    if st.button("开始推算八字并查询"):
         try:
             hour = birth_hour if birth_hour >= 0 else 0
             nianzhu, yuezhu, rizhu, shizhu = get_bazi_from_solar_li_chun(
@@ -198,7 +201,7 @@ elif input_mode == "农历生日":
     lunar_month = st.number_input("农历月（1-12）", min_value=1, max_value=12, value=1)
     lunar_day = st.number_input("农历日（1-30）", min_value=1, max_value=30, value=1)
     birth_hour = st.slider("请选择出生时辰（0-23时，未知请选-1）", -1, 23, -1)
-    if st.button("开始推算八字并查询吉凶"):
+    if st.button("开始推算八字并查询"):
         try:
             hour = birth_hour if birth_hour >= 0 else 0
             solar = Converter.Lunar2Solar(Lunar(lunar_year, lunar_month, lunar_day, False))
